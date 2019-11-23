@@ -1,9 +1,17 @@
 use std::os::unix::io::AsRawFd;
-use std::io::{BufReader, BufRead};
-use std::net::{TcpStream, TcpListener, SocketAddr};
-use std::io::{Read, Write};
-const MAX_POLLS: usize = 5;
+use std::io::{BufRead};
+use std::io::{Write};
 
+// use std::io::{self, BufReader, BufRead};
+// use std::net::{TcpStream, TcpListener, SocketAddr};
+// use std::io::{Read, Write};
+
+const MAX_POLLS: usize = 5;
+const STD_IN: i32 = 0;
+const _STD_OUT: i32 = 1;
+const _STD_ERR: i32 = 2;
+
+// NOTE: consider EPOLLIN | EPOLLPRI | EPOLLERR
 
 struct DownStream(std::net::TcpStream, std::net::SocketAddr);
 
@@ -68,6 +76,9 @@ impl ChatNode {
 
     fn start_routine(&mut self) {
         let host_fd: i32 = self.host_listener.as_raw_fd();
+        let up_fd: i32;
+        
+        //create epoll
         let fd_poller: i32 = match epoll::create(false) {
             Ok(fd) => fd,
             Err(error) => {
@@ -75,6 +86,8 @@ impl ChatNode {
                 std::process::exit(-1);
             },
         };
+
+        //add tcp listener to read set
         match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, host_fd, 
                             epoll::Event::new(epoll::Events::EPOLLIN, host_fd as u64)){
             Ok(_) => {},
@@ -84,6 +97,34 @@ impl ChatNode {
             },
         }
         
+        //add upstream to read set
+        match &self.up_stream {
+            Some(stream) => {
+                up_fd = stream.as_raw_fd();
+                match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, up_fd, 
+                                    epoll::Event::new(epoll::Events::EPOLLIN, up_fd as u64)){
+                    Ok(_) => {},
+                    Err(error) => {
+                        println!("Epoll Ctl Failure: {:?}", error);
+                        std::process::exit(-1);
+                    },
+                };
+
+                //STD_IN
+                match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, STD_IN, 
+                                    epoll::Event::new(epoll::Events::EPOLLIN, STD_IN as u64)){
+                    Ok(_) => {},
+                    Err(error) => {
+                        println!("Epoll Ctl Failure: {:?}", error);
+                        std::process::exit(-1);
+                    },
+                };
+            },
+            None => {
+                up_fd = -1;
+            }
+        };
+
         loop{
             let mut all_events: [epoll::Event; MAX_POLLS] = [epoll::Event::new(epoll::Events::EPOLLIN, 0); MAX_POLLS];
             let num_events = match epoll::wait(fd_poller, -2, &mut all_events){
@@ -133,11 +174,11 @@ impl ChatNode {
                     //got msg from downstream clients
 
                     let mut buf: String = String::new();
-                    let index: usize = self.get_stream(ready_fd).expect("finding tcpstream: got invalid ready_fd");
-                    let raw_count = std::io::BufReader::new(&self.down_streams[index].0).read_line(&mut buf).unwrap();  // <--------------------------- wrong, keeps waiting for entire buffer to be sent...
+                    let index: usize = self.get_stream(ready_fd).expect("Finding Fcpstream: Got Invalid Epoll Request");
+                    let raw_count = std::io::BufReader::new(&self.down_streams[index].0).read_line(&mut buf).unwrap();
                     match raw_count {
                         0 => {
-                            println!("Client {} Closed Connection", ready_fd);
+                            println!("Client {} Closed Connection", index);
                             match self.down_streams[index].0.shutdown(std::net::Shutdown::Both){
                                 Ok(_) => {},
                                 Err(error) =>{
@@ -156,10 +197,31 @@ impl ChatNode {
                             continue;
                         },
                         _ => {
-                            println!("client {}, got {} bytes: {}", ready_fd, raw_count, buf);
+                            println!("Client {}, Got {} Bytes: {}", index, raw_count, buf);
                         }, 
                     };
+                }
+                else if ready_fd == up_fd {
+                    //got msg from upstream
 
+
+                }
+                
+                else if ready_fd == 0 {
+                    //got msg from stdin
+                    let mut buf: String = String::new();
+                    match std::io::stdin().lock().read_line(&mut buf){
+                        Ok(_count) => {
+                            match self.up_stream.as_ref().unwrap().write(buf.as_bytes()){
+                                Ok(_) => {},
+                                Err(error) => {
+                                    println!("Write Failure: {:?}:", error);
+                                    std::process::exit(-1);
+                                },
+                            };
+                        },
+                        Err(_) => {},
+                    };
                 }
             }
         }
@@ -170,6 +232,7 @@ impl ChatNode {
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
     if argv.len() < 2 {
+        println!("Usage: ./chat <host-port>");
         println!("Usage: ./chat <host-port> <connect-ip> <connect-port>");
         std::process::exit(0);
     }
@@ -180,7 +243,29 @@ fn main() {
 
     
     let port: u16 = argv[1].trim().parse().unwrap();
-    let mut node: ChatNode = ChatNode::new(std::net::SocketAddr::from(([127, 0, 0, 1], port)), port); 
+    let mut node: ChatNode = ChatNode::new(std::net::SocketAddr::from(([127, 0, 0, 1], port)), port);
+
+    if argv.len() >= 4 {
+        let upstream: String = String::from(&argv[2]) + ":" + &argv[3];
+        node.up_stream = match std::net::TcpStream::connect(&upstream) {
+            Ok(mut connection) => {
+                println!("Connecting to {:?}", upstream);
+                match connection.write(format!("@Port {}\r\n", node.host_port).as_bytes()){
+                    Ok(_) => {},
+                    Err(error) => {
+                        println!("Write Failure: {:?}:", error);
+                        std::process::exit(-1);
+                    },
+                };
+                
+                Some(connection)
+            },
+            Err(_) => {
+                println!("Couldn't connect to {:?}", upstream);  
+                None
+            },
+        };
+    }
     node.start_routine();
     
 }
