@@ -111,7 +111,9 @@ struct ChatNode {
     down_streams: Vec<InfoStream>,
 
     //parent
-    up_stream: Option<&std::net::TcpStream>,
+    up_stream: Option<std::net::TcpStream>,
+    up_stream_port: u16,
+    up_stream_info: Option<Peer>,
 
     //failover
     failover_addr: Option<std::net::SocketAddr>,
@@ -126,7 +128,9 @@ impl ChatNode {
             host_listener: std::net::TcpListener::bind(addr).unwrap(),
             host_port: port,
             down_streams: Vec::new(),
-            up_stream_fd: None,
+            up_stream: None,
+            up_stream_port: 0,
+            up_stream_info: None,
             failover_addr: None,
             successor_addr: None,
         }
@@ -208,6 +212,12 @@ impl ChatNode {
             }
         }
 
+        if self.up_stream.is_none() {
+            if fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -258,6 +268,21 @@ impl ChatNode {
         };
     }
 
+    fn send_peer(&mut self) {
+        let send_port: u16 = self.host_port;
+        let buf: Vec<u8> = to_raw(&mut ChatHeader::from_port(send_port), None);
+        match self.up_stream.as_ref().unwrap().write(&buf){
+            Ok(bytes_count) => {
+                println!("Sent initial Port {}, bytes = {}, buf = {:?}", send_port, bytes_count, &buf);
+            },
+            Err(error) => {
+                println!("Write Failure: {:?}:", error);
+                std::process::exit(-1);
+            },
+        };
+
+    }
+
     fn start_routine(&mut self) {
         let host_fd: i32 = self.host_listener.as_raw_fd();
         
@@ -291,7 +316,7 @@ impl ChatNode {
         };
 
         //add upstream to read set
-        match self.up_stream {
+        match &self.up_stream {
             Some(stream) => {
                 match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, stream.as_raw_fd(), 
                                     epoll::Event::new(epoll::Events::EPOLLIN, stream.as_raw_fd() as u64)){
@@ -301,6 +326,9 @@ impl ChatNode {
                         std::process::exit(-1);
                     },
                 };
+
+                self.up_stream_info = Some(Peer::new(Some(self.up_stream.as_ref().unwrap().peer_addr().unwrap()), self.up_stream_port));
+                self.send_peer();
             },
             None => {},
         };
@@ -409,34 +437,18 @@ fn main() {
     
     let port: u16 = argv[1].trim().parse().unwrap();
     let mut node: ChatNode = ChatNode::new(std::net::SocketAddr::from(([127, 0, 0, 1], port)), port);
-
     if argv.len() >= 4 {
         let upstream: String = String::from(&argv[2]) + ":" + &argv[3];
-        node.up_stream = match std::net::TcpStream::connect(&upstream) {
-            Ok(mut connection) => {
+        match std::net::TcpStream::connect(&upstream) {
+            Ok(connection) => {
                 println!("Connected to {:?}", upstream);
-                connection.set_nodelay(true).expect("Error TcpNoDelay(true)");
-                let buf: Vec<u8> = to_raw(&mut ChatHeader::from_port(node.host_port), None);
-                match connection.write(&buf){
-                    Ok(bytes_count) => {
-                        println!("Sent initial Port {}, bytes = {}, buf = {:?}", node.host_port, bytes_count, &buf);
-                    },
-                    Err(error) => {
-                        println!("Write Failure: {:?}:", error);
-                        std::process::exit(-1);
-                    },
-                };
-                let raw_fd: i32 = connection.as_raw_fd();
-                node.down_streams.push(InfoStream(connection, upstream.parse().unwrap(), true, argv[3].trim().parse().unwrap(), String::from("Upstream")));
-                Some(&connection)
+                node.up_stream = Some(connection).take();
+                node.up_stream_port = argv[3].trim().parse().unwrap();
             },
             Err(_) => {
                 println!("Couldn't connect to {:?}", upstream);  
-                None
             },
         };
-        println!("up_stream_fd = {}", node.up_stream.unwrap().as_raw_fd());
     }
     node.start_routine();
-    
 }
