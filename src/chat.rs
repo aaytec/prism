@@ -2,9 +2,10 @@ use std::os::unix::io::AsRawFd;
 use std::io::{BufRead};
 use std::io::{Write, Read};
 
-// use std::io::{self, BufReader, BufRead};
-// use std::net::{TcpStream, TcpListener, SocketAddr};
-// use std::io::{Read, Write};
+const MAX_POLLS: usize = 5;
+const STD_IN: i32 = 0;
+const CMD_SYM: char = '~';
+
 
 // NOTE: consider EPOLLIN | EPOLLPRI | EPOLLERR
 
@@ -85,20 +86,6 @@ fn parse_raw(buffer: &mut [u8]) -> (std::option::Option<&ChatHeader>, std::optio
             return (Some(hdr), None);
         }
     }
-}
-
-const MAX_POLLS: usize = 5;
-const STD_IN: i32 = 0;
-const _STD_OUT: i32 = 1;
-const _STD_ERR: i32 = 2;
-
-const CMD_SYM: char = '~';
-const CMD_PORT: &str = "~Port";
-
-
-
-fn wrong_cmd() {
-    println!("Wrong Command Format");
 }
 
 struct InfoStream(std::net::TcpStream, std::net::SocketAddr, bool, u16, String);
@@ -196,9 +183,9 @@ impl ChatNode {
         };
     }
 
-    fn handle_recv(&mut self, buf: &mut Vec<u8>, fd: i32) {
+    fn handle_recv(&mut self, buf: &mut Vec<u8>, epd: i32, fd: i32) {
         match buf.len() {
-            0 => panic!("shouldn't recv 0 in handle_recv(): checked already"),
+            0 => { self.close_client(epd, fd); },
             _ => {
                 match parse_raw(buf) {
                     (None, None) => { println!("invalid chat"); },
@@ -272,6 +259,16 @@ impl ChatNode {
         None
     }
 
+    fn get_stream_info(&mut self, fd: i32) -> std::option::Option<&InfoStream> {
+        for stream in &self.down_streams {
+            if stream.0.as_raw_fd() == fd {
+                return Some(&stream);
+            }
+        }
+
+        None
+    }
+
     fn get_name(&self, fd: i32) -> String {
         for stream in &self.down_streams {
             if stream.0.as_raw_fd() == fd {
@@ -305,6 +302,9 @@ impl ChatNode {
                 std::process::exit(-1);
             },
         };
+
+        let index: usize = self.get_stream_idx(fd).unwrap();
+        self.down_streams.remove(index);
     }
 
     fn send_peer(&mut self) {
@@ -367,6 +367,8 @@ impl ChatNode {
                 };
 
                 self.up_stream_info = Some(Peer::new(Some(self.up_stream.as_ref().unwrap().peer_addr().unwrap()), self.up_stream_port));
+                self.up_stream.as_ref().unwrap().set_nonblocking(true).expect("Error in SetNonBlocking(true)");
+                self.up_stream.as_ref().unwrap().set_nodelay(true).expect("set_nodelay failure");
                 self.send_peer();
             },
             None => {},
@@ -399,6 +401,9 @@ impl ChatNode {
                         Ok((down_stream, down_stream_addr)) => {
 
                             let client_fd = down_stream.as_raw_fd();
+                            down_stream.set_nonblocking(true).expect("Error in SetNonBlocking(true)");
+                            down_stream.set_nodelay(true).expect("set_nodelay failure");
+
                             println!("Got Connection From {}, fd = {}", down_stream_addr, client_fd);
                             self.down_streams.push(InfoStream(down_stream, down_stream_addr, false, 0, format!("Client {}", client_fd)));
 
@@ -421,28 +426,35 @@ impl ChatNode {
                     //got msg from connections
 
 
-                    let mut buf = [0u8; 1400]; // <--------------------- buffered fixed, fix later by looping TcpStream.peek() and stop at 0
-                    match self.get_stream(ready_fd).unwrap().read(&mut buf) {
-                        Ok(raw_count) => {
-                            match raw_count {
-                                0 => {
-                                    println!("getting 0 bytes from {}", self.get_name(ready_fd));
-                                    self.close_client(fd_poller, ready_fd);
-                                },
-                                _ => {
-                                    println!("From {}, Got {} Bytes", self.get_name(ready_fd), raw_count);
-                                    let mut vecbuf: Vec<u8> = Vec::new();
-                                    vecbuf.extend_from_slice(&buf[0..raw_count]);
-                                    println!("recved {:?}", vecbuf);
-                                    self.handle_recv(&mut vecbuf, ready_fd);
-                                }, 
-                            };
-                        },
-                        Err(_) => {
-                            println!("BufRead Err");
-                            self.close_client(fd_poller, ready_fd);
+                    let mut vecbuf: Vec<u8> = Vec::new();
+                    loop {
+                        let mut peakbuf = [0u8; 1400]; // <--------------------- buffered fixed, fix later by looping TcpStream.peek() and stop at 0
+                        let mut peak_count: usize = 0;
+                        match self.get_stream(ready_fd).unwrap().peek(&mut peakbuf) {
+                            Ok(count) => { peak_count = count; },
+                            Err(_) => { break; },
+                        };
+
+                        if peak_count == 0 {
+                            break;
                         }
-                    };
+                        
+                        let mut buf = vec![0u8; peak_count];
+                        match self.get_stream(ready_fd).unwrap().read_exact(&mut buf) {
+                            Ok(()) => {
+                                println!("From {}, Got {} Bytes", self.get_name(ready_fd), peak_count);
+                                println!("recved {:?}", buf);
+                                vecbuf.extend_from_slice(&buf);
+                            },
+                            Err(_) => {
+                                println!("BufRead Err");
+                                self.close_client(fd_poller, ready_fd);
+                                break;
+                            }
+                        };
+                    }
+
+                    self.handle_recv(&mut vecbuf, fd_poller, ready_fd);
                 }
                 else if ready_fd == 0 {
                     //got msg from stdin
@@ -485,7 +497,6 @@ fn main() {
         match std::net::TcpStream::connect(&upstream) {
             Ok(connection) => {
                 println!("Connected to {:?}", upstream);
-                connection.set_nodelay(true).expect("set_nodelay failure");
                 node.up_stream = Some(connection).take();
                 node.up_stream_port = argv[3].trim().parse().unwrap();
             },
