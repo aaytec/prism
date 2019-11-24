@@ -12,3 +12,4 @@ path= "./src/chat.rs"
 
 [dependencies]
 epoll="*"
+regex="*"

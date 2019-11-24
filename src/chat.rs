@@ -1,10 +1,13 @@
+extern crate regex;
+
 use std::os::unix::io::AsRawFd;
 use std::io::{BufRead};
 use std::io::{Write, Read};
+use regex::Regex;
 
 const MAX_POLLS: usize = 5;
 const STD_IN: i32 = 0;
-const CMD_SYM: char = '~';
+const CMD_SYM: char = '/';
 
 
 // NOTE: consider EPOLLIN | EPOLLPRI | EPOLLERR
@@ -47,6 +50,27 @@ impl ChatHeader {
     fn from_msg() -> Self {
         ChatHeader {
             chat_t: ChatType::REGULAR,
+            peer: None,
+        }
+    }
+
+    fn from_rebalance(addr: std::net::SocketAddr, portno: u16) -> Self {
+        ChatHeader {
+            chat_t: ChatType::REBALANCE,
+            peer: Some(Peer::new(Some(addr), portno)),
+        }
+    }
+
+    fn from_failover(addr: std::net::SocketAddr, portno: u16) -> Self {
+        ChatHeader {
+            chat_t: ChatType::FAILOVER,
+            peer: Some(Peer::new(Some(addr), portno)),
+        }
+    }
+
+    fn from_namechange() -> Self {
+        ChatHeader {
+            chat_t: ChatType::NAMECHANGE,
             peer: None,
         }
     }
@@ -96,6 +120,7 @@ struct ChatNode {
     host_listener: std::net::TcpListener,
     host_port: u16,
     down_streams: Vec<InfoStream>,
+    name: std::option::Option<String>,
 
     //parent
     up_stream: Option<std::net::TcpStream>,
@@ -115,6 +140,7 @@ impl ChatNode {
             host_listener: std::net::TcpListener::bind(addr).unwrap(),
             host_port: port,
             down_streams: Vec::new(),
+            name: None,
             up_stream: None,
             up_stream_port: 0,
             up_stream_info: None,
@@ -132,6 +158,15 @@ impl ChatNode {
         }
     }
 
+    fn set_name(&mut self, name: &str) {
+        if self.name == None {
+            self.name = Some(String::from(name));
+        }
+        else{
+            println!("Setting Name Again Not Allowed!");
+        }
+    }
+
     fn is_peer(&self, fd: i32) -> bool {
         for stream in &self.down_streams {
             if stream.0.as_raw_fd() == fd && stream.2{
@@ -142,12 +177,12 @@ impl ChatNode {
     }
 
     fn broadcast(&mut self, buf: &mut Vec<u8>, fd: i32) {
-        println!("BROADCASTING");
+        // println!("BROADCASTING");
         for i in 0..self.down_streams.len() {
             if self.down_streams[i].0.as_raw_fd() != fd {
                 match self.down_streams[i].0.write(buf){
                     Ok(_) => {
-                        println!("\t| Sending {}: Buf = {:?}", self.get_name(self.down_streams[i].0.as_raw_fd()), buf);
+                        // println!("\t| Sending {}: Buf = {:?}", self.get_name(self.down_streams[i].0.as_raw_fd()), buf);
                         
                     },
                     Err(error) => {
@@ -161,7 +196,7 @@ impl ChatNode {
             if fd != self.up_stream.as_ref().unwrap().as_raw_fd() {
                 match self.up_stream.as_ref().unwrap().write(buf) {
                     Ok(_) => {
-                        println!("\t| Sending Upstream: Buf = {:?}", buf);
+                        // println!("\t| Sending Upstream: Buf = {:?}", buf);
                     },
                     Err(error) => {
                         println!("In broadcast(), Write Failure: {:?}:", error);
@@ -172,17 +207,6 @@ impl ChatNode {
 
     }
 
-    fn handle_cmd(&mut self, hdr: &ChatHeader, fd: i32){
-        match hdr.chat_t {
-            ChatType::PORT => {
-                println!("got port msg");
-                let portno: u16 = hdr.peer.as_ref().unwrap().port;
-                self.set_peer(fd, portno);
-            },
-            _ => unimplemented!("implement all cmd"),
-        };
-    }
-
     fn handle_recv(&mut self, buf: &mut Vec<u8>, epd: i32, fd: i32) {
         match buf.len() {
             0 => { self.close_client(epd, fd); },
@@ -191,19 +215,45 @@ impl ChatNode {
                     (None, None) => { println!("invalid chat"); },
                     (Some(hdr), payload) => {
                         match hdr.chat_t {
+                            ChatType::PORT => {
+                                // println!("got port msg");
+                                let portno: u16 = hdr.peer.as_ref().unwrap().port;
+                                self.set_peer(fd, portno);
+                            },
                             ChatType::REGULAR => {
-                                println!("got reg msg"); 
                                 if payload != None {
+                                    // println!("got reg msg");
+                                    println!("{}", String::from_utf8(payload.unwrap().to_vec()).unwrap());
                                     self.broadcast(buf, fd);
                                 }
-                            },
-                            _ => {
-                                self.handle_cmd(hdr, fd);
-                            },
+                            }
+                            _ => unimplemented!("implement all cmd"),
                         };
                     },
                     _ => {println!("invalid chat 2"); },
                 };
+            },
+        };
+    }
+
+    fn handle_send(&mut self, msg: &str, fd: i32) {
+        // println!("comparing msg = {}", msg);
+        let name_re = regex::Regex::new(r"^/name (?P<arg>[^\s\t\r\n]+)").unwrap();
+        let cap = name_re.captures(msg);
+        match cap {
+            None => {
+                match self.name {
+                    Some(_) => {
+                        let entire_msg: String = String::from(self.name.as_ref().unwrap()) + "> " + msg.as_ref();
+                        self.send_msg(fd, entire_msg.as_ref());
+                    },
+                    None => println!("Please Set Your Name First!"),
+                };
+            },
+            Some(c) => {
+                println!("Welcome {}!", c.name("arg").unwrap().as_str());
+                let name: &str = c.name("arg").unwrap().as_str();
+                self.set_name(name.as_ref());
             },
         };
     }
@@ -303,8 +353,17 @@ impl ChatNode {
             },
         };
 
-        let index: usize = self.get_stream_idx(fd).unwrap();
-        self.down_streams.remove(index);
+        match self.get_stream_idx(fd) {
+            Some(index) => {
+                self.down_streams.remove(index);
+            },
+            None => {},
+        };
+    }
+
+    fn send_msg(&mut self, fd: i32, msg: &[u8]) {
+        let mut buf = to_raw(&mut ChatHeader::from_msg(), Some(msg));
+        self.broadcast(&mut buf, fd);
     }
 
     fn send_peer(&mut self) {
@@ -312,7 +371,7 @@ impl ChatNode {
         let buf: Vec<u8> = to_raw(&mut ChatHeader::from_port(send_port), None);
         match self.up_stream.as_ref().unwrap().write(&buf){
             Ok(bytes_count) => {
-                println!("Sent initial Port {}, bytes = {}, buf = {:?}", send_port, bytes_count, &buf);
+                // println!("Sent initial Port {}, bytes = {}, buf = {:?}", send_port, bytes_count, &buf);
             },
             Err(error) => {
                 println!("Write Failure: {:?}:", error);
@@ -404,7 +463,7 @@ impl ChatNode {
                             down_stream.set_nonblocking(true).expect("Error in SetNonBlocking(true)");
                             down_stream.set_nodelay(true).expect("set_nodelay failure");
 
-                            println!("Got Connection From {}, fd = {}", down_stream_addr, client_fd);
+                            println!("Got Connection From {}", down_stream_addr);
                             self.down_streams.push(InfoStream(down_stream, down_stream_addr, false, 0, format!("Client {}", client_fd)));
 
                             match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, client_fd, 
@@ -442,8 +501,8 @@ impl ChatNode {
                         let mut buf = vec![0u8; peak_count];
                         match self.get_stream(ready_fd).unwrap().read_exact(&mut buf) {
                             Ok(()) => {
-                                println!("From {}, Got {} Bytes", self.get_name(ready_fd), peak_count);
-                                println!("recved {:?}", buf);
+                                // println!("From {}, Got {} Bytes", self.get_name(ready_fd), peak_count);
+                                // println!("recved {:?}", buf);
                                 vecbuf.extend_from_slice(&buf);
                             },
                             Err(_) => {
@@ -461,12 +520,12 @@ impl ChatNode {
                     let mut msg: String = String::new();
                     match std::io::stdin().lock().read_line(&mut msg){
                         Ok(_count) => {
-                            let msg_v: &mut Vec<u8>;
-                            unsafe{
-                                msg_v = msg.as_mut_vec();
-                            }
-                            let mut buf = to_raw(&mut ChatHeader::from_msg(), Some(msg_v));
-                            self.broadcast(&mut buf, ready_fd);
+                            // let mut msg_v: &mut Vec<u8>;
+                            // unsafe{
+                            //     msg_v = msg.as_mut_vec();
+                            // }
+                            // let mut buf = to_raw(&mut ChatHeader::from_msg(), Some(msg_v));
+                            self.handle_send(msg.trim(), ready_fd);                            
                         },
                         Err(_) => {},
                     };
