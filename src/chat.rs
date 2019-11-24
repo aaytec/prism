@@ -6,29 +6,36 @@ use std::io::{Write};
 // use std::net::{TcpStream, TcpListener, SocketAddr};
 // use std::io::{Read, Write};
 
+// NOTE: consider EPOLLIN | EPOLLPRI | EPOLLERR
+
+// enum CommandType {
+//     PORT,
+//     REBALANCE,
+//     FAILOVER,
+//     NAMECHANGE,
+
+// }
+
+// struct ChatCommand {
+//     tpye: CommandType,
+//     buf: String,
+// }
+
 const MAX_POLLS: usize = 5;
-const CMD_SYM: char = '~';
 const STD_IN: i32 = 0;
 const _STD_OUT: i32 = 1;
 const _STD_ERR: i32 = 2;
 
+const CMD_SYM: char = '~';
+const CMD_PORT: &str = "~Port";
 
-// NOTE: consider EPOLLIN | EPOLLPRI | EPOLLERR
 
-struct InfoStream(std::net::TcpStream, std::net::SocketAddr, bool, i32);
 
-enum CommandType {
-    PORT,
-    REBALANCE,
-    FAILOVER,
-    NAMECHANGE,
-
+fn wrong_cmd() {
+    println!("Wrong Command Format");
 }
 
-struct ChatCommand {
-    tpye: CommandType,
-    buf: String,
-}
+struct InfoStream(std::net::TcpStream, std::net::SocketAddr, bool, u16, String);
 
 struct ChatNode {
 
@@ -61,24 +68,62 @@ impl ChatNode {
 
     fn broadcast(&mut self, buf: &str, fd: i32) {
         println!("BROADCASTING");
-        for stream in &mut self.down_streams {
-            let send_fd: i32 = stream.0.as_raw_fd();
+        for i in 0..self.down_streams.len() {
+            let send_fd: i32 = self.down_streams[i].0.as_raw_fd();
             if send_fd != fd {
-                println!("\t| Sending Client {}: {:?}", send_fd, buf);
-                match stream.0.write(buf.as_bytes()){
-                    Ok(_) => {},
+                match self.down_streams[i].0.write(format!("{}\r\n", buf).as_bytes()){
+                    Ok(_) => {
+                        println!("\t| Sending {}: Buf = {:?}", self.get_name(fd), buf);
+                        
+                    },
                     Err(error) => {
                         println!("In broadcast(), Write Failure: {:?}:", error);
-                        std::process::exit(-1);
                     },
                 };
             }
         }
     }
 
-    fn handle_cmd(&self, buf: &str, fd: i32){
+    fn set_peer(&mut self, fd: i32, portno: u16) {
+        for mut stream in &mut self.down_streams {
+            if stream.0.as_raw_fd() == fd {
+                stream.2 = true;
+                stream.3 = portno;
+            }
+        }
+    }
+
+    fn is_peer(&self, fd: i32) -> bool {
+        for stream in &self.down_streams {
+            if stream.0.as_raw_fd() == fd && stream.2{
+                return true;
+            }
+        }
+        false
+    }
+
+    fn handle_cmd(&mut self, buf: &str, fd: i32){
         println!("Got Command: {:?}", buf);
         let mut iter = buf.split_whitespace();
+        match iter.next() {
+            Some(cmd) => {
+                match cmd {
+                    CMD_PORT => {
+                        let result: std::option::Option<&str> = iter.next();
+                        if result == None {
+                            wrong_cmd();
+                        }
+                        else{
+                            let portno: u16 = result.unwrap().parse().unwrap();
+                            println!("Found Peer");
+                            self.set_peer(fd, portno);
+                        }
+                    },
+                    _ => println!("Got Unknown Command"),
+                };
+            },
+            None => { /* Do nothing, nexe() will give none at end*/ },
+        };
     }
 
     fn handle_recv(&mut self, buf: &str, fd: i32) {
@@ -87,17 +132,17 @@ impl ChatNode {
             _ => {
                 match buf.chars().nth(0).unwrap(){
                     CMD_SYM => {
-                        self.handle_cmd(buf, fd);
+                        self.handle_cmd(buf.trim(), fd);
                     },
                     _ => {
-                        self.broadcast(buf, fd);
+                        self.broadcast(buf.trim(), fd);
                     },
                 };
             },
         };
     }
     
-    fn is_down_stream(&self, fd: i32) -> bool {
+    fn is_stream(&self, fd: i32) -> bool {
         for client in &self.down_streams {
             if client.0.as_raw_fd() == fd {
                 return true;
@@ -126,9 +171,17 @@ impl ChatNode {
         None
     }
 
+    fn get_name(&self, fd: i32) -> String {
+        for stream in &self.down_streams {
+            if stream.0.as_raw_fd() == fd {
+                return String::from(&stream.4);
+            }
+        }
+        String::from("UnKnown")
+    }
+
     fn close_client(&mut self, efd: i32, fd: i32) {
-        let index: usize = self.get_stream_idx(fd).expect("Finding Fcpstream: Got Invalid Epoll Request");
-        println!("Client {} Closed Connection", index);
+        println!("{} Closed Connection", self.get_name(fd));
         match self.get_stream(fd).unwrap().shutdown(std::net::Shutdown::Both){
             Ok(_) => {},
             Err(error) =>{
@@ -221,7 +274,7 @@ impl ChatNode {
 
                             println!("Got Connection From {}", down_stream_addr);
                             let client_fd = down_stream.as_raw_fd();
-                            self.down_streams.push(InfoStream(down_stream, down_stream_addr, false, -1));
+                            self.down_streams.push(InfoStream(down_stream, down_stream_addr, false, 0, format!("Client {}", ready_fd)));
 
                             match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, client_fd, 
                                                 epoll::Event::new(epoll::Events::EPOLLIN, client_fd as u64)){
@@ -238,18 +291,17 @@ impl ChatNode {
                         },
                     }
                 }
-                else if self.is_down_stream(ready_fd) {
+                else if self.is_stream(ready_fd) {
                     //got msg from connections
 
                     let mut buf: String = String::new();
-                    let index: usize = self.get_stream_idx(ready_fd).expect("Finding Tcpstream: Got Invalid Epoll Request");
                     match std::io::BufReader::new(self.get_stream(ready_fd).unwrap()).read_line(&mut buf){
                         Ok(raw_count) => {
                             match raw_count {
                                 0 => self.close_client(fd_poller, ready_fd),
                                 _ => {
-                                    println!("Client {}, Got {} Bytes: {}", index, raw_count, buf.trim());
-                                    self.handle_recv(buf.trim(), ready_fd);
+                                    // println!("From {}, Got {} Bytes: {}", self.get_name(ready_fd), raw_count, buf);
+                                    self.handle_recv(buf.as_mut_str(), ready_fd);
                                 }, 
                             };
                         },
@@ -263,7 +315,7 @@ impl ChatNode {
                     let mut buf: String = String::new();
                     match std::io::stdin().lock().read_line(&mut buf){
                         Ok(_count) => {
-                            self.broadcast(buf.as_mut_str(), ready_fd);
+                            self.broadcast(buf.as_mut_str().trim(), ready_fd);
                         },
                         Err(_) => {},
                     };
@@ -303,7 +355,7 @@ fn main() {
                     },
                 };
                 let raw_fd: i32 = connection.as_raw_fd();
-                node.down_streams.push(InfoStream(connection, upstream.parse().unwrap(), true, argv[3].trim().parse().unwrap()));
+                node.down_streams.push(InfoStream(connection, upstream.parse().unwrap(), true, argv[3].trim().parse().unwrap(), String::from("Upstream")));
                 Some(raw_fd)
             },
             Err(_) => {
