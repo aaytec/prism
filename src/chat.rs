@@ -64,7 +64,7 @@ fn to_raw(head: &mut ChatHeader, buffer: std::option::Option<&[u8]>) -> Vec<u8> 
         },
         _ => {},
     };
-
+    
     buf
 }
 
@@ -160,7 +160,7 @@ impl ChatNode {
             if self.down_streams[i].0.as_raw_fd() != fd {
                 match self.down_streams[i].0.write(buf){
                     Ok(_) => {
-                        println!("\t| Sending {}: Buf = {:?}", self.get_name(fd), buf);
+                        println!("\t| Sending {}: Buf = {:?}", self.get_name(self.down_streams[i].0.as_raw_fd()), buf);
                         
                     },
                     Err(error) => {
@@ -169,11 +169,26 @@ impl ChatNode {
                 };
             }
         }
+
+        if self.up_stream.is_some() {
+            if fd != self.up_stream.as_ref().unwrap().as_raw_fd() {
+                match self.up_stream.as_ref().unwrap().write(buf) {
+                    Ok(_) => {
+                        println!("\t| Sending Upstream: Buf = {:?}", buf);
+                    },
+                    Err(error) => {
+                        println!("In broadcast(), Write Failure: {:?}:", error);
+                    },
+                };
+            }
+        }
+
     }
 
     fn handle_cmd(&mut self, hdr: &ChatHeader, fd: i32){
         match hdr.chat_t {
             ChatType::PORT => {
+                println!("got port msg");
                 let portno: u16 = hdr.peer.as_ref().unwrap().port;
                 self.set_peer(fd, portno);
             },
@@ -186,10 +201,11 @@ impl ChatNode {
             0 => panic!("shouldn't recv 0 in handle_recv(): checked already"),
             _ => {
                 match parse_raw(buf) {
-                    (None, None) => { /* Do nothing, skip*/ },
+                    (None, None) => { println!("invalid chat"); },
                     (Some(hdr), payload) => {
                         match hdr.chat_t {
-                            ChatType::REGULAR => { 
+                            ChatType::REGULAR => {
+                                println!("got reg msg"); 
                                 if payload != None {
                                     self.broadcast(buf, fd);
                                 }
@@ -199,7 +215,7 @@ impl ChatNode {
                             },
                         };
                     },
-                    _ => {/* Do nothing (wrong format maybe?) */},
+                    _ => {println!("invalid chat 2"); },
                 };
             },
         };
@@ -212,7 +228,17 @@ impl ChatNode {
             }
         }
 
-        if self.up_stream.is_none() {
+        if self.up_stream.is_some() {
+            if fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    fn is_up_stream(&self, fd: i32) -> bool {
+        if self.up_stream.is_some() {
             if fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
                 return true;
             }
@@ -225,6 +251,12 @@ impl ChatNode {
         for stream in &mut self.down_streams {
              if stream.0.as_raw_fd() == fd {
                 return Some(&mut stream.0);
+            }
+        }
+
+         if self.up_stream.is_some() {
+            if fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
+                return self.up_stream.as_mut();
             }
         }
 
@@ -246,6 +278,13 @@ impl ChatNode {
                 return String::from(&stream.4);
             }
         }
+
+         if self.up_stream.is_some() {
+            if fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
+                return String::from("Upstream");
+            }
+        }
+
         String::from("UnKnown")
     }
 
@@ -381,17 +420,21 @@ impl ChatNode {
                 else if self.is_stream(ready_fd) {
                     //got msg from connections
 
-                    let mut buf: Vec<u8> = Vec::new();
+
+                    let mut buf = [0u8; 1400]; // <--------------------- buffered fixed, fix later by looping TcpStream.peek() and stop at 0
                     match self.get_stream(ready_fd).unwrap().read(&mut buf) {
                         Ok(raw_count) => {
                             match raw_count {
                                 0 => {
-                                    println!("{:?}", buf);
                                     println!("getting 0 bytes from {}", self.get_name(ready_fd));
+                                    self.close_client(fd_poller, ready_fd);
                                 },
                                 _ => {
                                     println!("From {}, Got {} Bytes", self.get_name(ready_fd), raw_count);
-                                    self.handle_recv(&mut buf, ready_fd);
+                                    let mut vecbuf: Vec<u8> = Vec::new();
+                                    vecbuf.extend_from_slice(&buf[0..raw_count]);
+                                    println!("recved {:?}", vecbuf);
+                                    self.handle_recv(&mut vecbuf, ready_fd);
                                 }, 
                             };
                         },
@@ -442,6 +485,7 @@ fn main() {
         match std::net::TcpStream::connect(&upstream) {
             Ok(connection) => {
                 println!("Connected to {:?}", upstream);
+                connection.set_nodelay(true).expect("set_nodelay failure");
                 node.up_stream = Some(connection).take();
                 node.up_stream_port = argv[3].trim().parse().unwrap();
             },
