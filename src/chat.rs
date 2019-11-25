@@ -161,6 +161,7 @@ impl ChatNode {
     fn set_name(&mut self, name: &str) {
         if self.name == None {
             self.name = Some(String::from(name));
+            println!("Welcome {}!", name);
         }
         else{
             println!("Setting Name Again Not Allowed!");
@@ -238,8 +239,8 @@ impl ChatNode {
 
     fn handle_send(&mut self, msg: &str, fd: i32) {
         // println!("comparing msg = {}", msg);
-        let name_re = regex::Regex::new(r"^/name (?P<arg>[^\s\t\r\n]+)").unwrap();
-        let cap = name_re.captures(msg);
+        let re = regex::Regex::new(r"^/(?P<cmd>[^\s\t\r\n]+)(?x)(?P<arg>[^\r\n]+)").unwrap();
+        let cap = re.captures(msg);
         match cap {
             None => {
                 match self.name {
@@ -251,9 +252,16 @@ impl ChatNode {
                 };
             },
             Some(c) => {
-                println!("Welcome {}!", c.name("arg").unwrap().as_str());
-                let name: &str = c.name("arg").unwrap().as_str();
-                self.set_name(name.as_ref());
+                match c.name("cmd").unwrap().as_str() {
+                    "name" => {
+                        let name: &str = c.name("arg").unwrap().as_str().trim();
+                        self.set_name(name.as_ref());
+                    }
+                    "exit" => {
+                        std::process::exit(0);
+                    }
+                    _ => {/*  Ignore cmd */ },
+                }
             },
         };
     }
