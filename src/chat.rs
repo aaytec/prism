@@ -20,6 +20,7 @@ enum ChatType {
     NAMECHANGE,
 }
 
+#[derive(Copy, Clone)]
 struct Peer{
     addr: std::option::Option<std::net::SocketAddr>,
     port: u16,
@@ -74,6 +75,13 @@ impl ChatHeader {
             peer: None,
         }
     }
+
+    fn from(t: ChatType, p: Peer) -> Self {
+        ChatHeader {
+            chat_t: t,
+            peer: Some(p),
+        }
+    }
 }
 
 fn to_raw(head: &mut ChatHeader, buffer: std::option::Option<&[u8]>) -> Vec<u8> {
@@ -121,6 +129,7 @@ struct ChatNode {
     host_port: u16,
     down_streams: Vec<InfoStream>,
     name: std::option::Option<String>,
+    epoll_fd: i32,
 
     //parent
     up_stream: Option<std::net::TcpStream>,
@@ -128,10 +137,10 @@ struct ChatNode {
     up_stream_info: Option<Peer>,
 
     //failover
-    failover_addr: Option<std::net::SocketAddr>,
+    failover: Option<Peer>,
 
     //successor
-    successor_addr: Option<std::net::SocketAddr>,
+    successor: Option<i32>,
 }
 
 impl ChatNode {
@@ -141,11 +150,12 @@ impl ChatNode {
             host_port: port,
             down_streams: Vec::new(),
             name: None,
+            epoll_fd: -1,
             up_stream: None,
             up_stream_port: 0,
             up_stream_info: None,
-            failover_addr: None,
-            successor_addr: None,
+            failover: None,
+            successor: None,
         }
     }
 
@@ -154,8 +164,28 @@ impl ChatNode {
             if stream.0.as_raw_fd() == fd {
                 stream.2 = true;
                 stream.3 = portno;
+                println!("success for setting port for {} = {}", fd, portno);
             }
         }
+    }
+
+    fn is_peer(&self, fd: i32) -> bool {
+        for stream in &self.down_streams {
+            if stream.0.as_raw_fd() == fd && stream.2{
+                return true;
+            }
+        }
+        false
+    }
+    
+    fn get_peer_port(&self, fd: i32) -> u16 {
+        for stream in &self.down_streams {
+            if stream.0.as_raw_fd() == fd {
+                return stream.3;
+            }
+        }
+        println!("couldn't find port");
+        return 0;
     }
 
     fn set_name(&mut self, name: &str) {
@@ -168,19 +198,11 @@ impl ChatNode {
         }
     }
 
-    fn is_peer(&self, fd: i32) -> bool {
-        for stream in &self.down_streams {
-            if stream.0.as_raw_fd() == fd && stream.2{
-                return true;
-            }
-        }
-        false
-    }
-
-    fn broadcast(&mut self, buf: &mut Vec<u8>, fd: i32) {
+    fn broadcast(&mut self, buf: &mut Vec<u8>, fd: i32, only_peer: bool) {
         // println!("BROADCASTING");
         for i in 0..self.down_streams.len() {
-            if self.down_streams[i].0.as_raw_fd() != fd {
+            if only_peer && !self.down_streams[i].2 { continue; }
+            else if self.down_streams[i].0.as_raw_fd() != fd {
                 match self.down_streams[i].0.write(buf){
                     Ok(_) => {
                         // println!("\t| Sending {}: Buf = {:?}", self.get_name(self.down_streams[i].0.as_raw_fd()), buf);
@@ -205,9 +227,8 @@ impl ChatNode {
                 };
             }
         }
-
     }
-
+    
     fn handle_recv(&mut self, buf: &mut Vec<u8>, epd: i32, fd: i32) {
         match buf.len() {
             0 => { self.close_client(epd, fd); },
@@ -219,14 +240,21 @@ impl ChatNode {
                             ChatType::PORT => {
                                 // println!("got port msg");
                                 let portno: u16 = hdr.peer.as_ref().unwrap().port;
+                                println!("setting port for {} = {}", fd, portno);
                                 self.set_peer(fd, portno);
+                                self.send_failover();
                             },
                             ChatType::REGULAR => {
                                 if payload != None {
                                     // println!("got reg msg");
                                     println!("{}", String::from_utf8(payload.unwrap().to_vec()).unwrap());
-                                    self.broadcast(buf, fd);
+                                    self.broadcast(buf, fd, false);
                                 }
+                            },
+                            ChatType::FAILOVER => {
+                                println!("got failover msg");
+                                self.failover = Some(hdr.peer.unwrap());
+                                println!("failover addr: {}:{}", self.failover.unwrap().addr.unwrap().ip(), self.failover.unwrap().port);
                             }
                             _ => unimplemented!("implement all cmd"),
                         };
@@ -343,8 +371,74 @@ impl ChatNode {
         String::from("UnKnown")
     }
 
+    fn reconnect(&mut self, peer: &Peer) {
+        if self.up_stream.is_some() {
+            println!("Closing connection with UpStream");
+            match self.up_stream.as_ref().unwrap().shutdown(std::net::Shutdown::Both){
+                Ok(_) => {
+
+                    let fd: i32 = self.up_stream.as_ref().unwrap().as_raw_fd();
+                    match epoll::ctl(   self.epoll_fd, epoll::ControlOptions::EPOLL_CTL_DEL, fd, 
+                            epoll::Event::new(epoll::Events::EPOLLERR, fd as u64)){
+                        Ok(_) => {},
+                        Err(error) => {
+                            println!("Epoll Ctl Failure: {:?}", error);
+                            std::process::exit(-1);
+                        },
+                    };
+
+                    self.up_stream = None;
+                    self.up_stream_info = None;
+                    self.up_stream_port = 0;
+                },
+                Err(error) =>{
+                    println!("Socket Shutdown Failure: {:?}", error);
+                    std::process::exit(-1);
+                },
+            };
+        }
+
+        let addr: std::net::SocketAddr = std::net::SocketAddr::new(peer.addr.unwrap().ip(), peer.port);
+        match std::net::TcpStream::connect(addr) {
+            Ok(connection) => {
+                println!("Connected to {}", addr);
+                self.up_stream = Some(connection).take();
+                self.up_stream_port = peer.port;
+                self.up_stream_info = Some(*peer);
+
+                match epoll::ctl(   self.epoll_fd, epoll::ControlOptions::EPOLL_CTL_ADD, self.up_stream.as_ref().unwrap().as_raw_fd(), 
+                                    epoll::Event::new(epoll::Events::EPOLLIN, self.up_stream.as_ref().unwrap().as_raw_fd() as u64)){
+                    Ok(_) => {},
+                    Err(error) => {
+                        println!("Epoll Ctl Failure: {:?}", error);
+                        std::process::exit(-1);
+                    },
+                };
+
+                self.up_stream.as_ref().unwrap().set_nonblocking(true).expect("Error in SetNonBlocking(true)");
+                self.up_stream.as_ref().unwrap().set_nodelay(true).expect("set_nodelay failure");
+                self.send_peer();
+            },
+            Err(_) => {
+                println!("Couldn't connect to {:?}", addr);  
+            },
+        };
+    }
+
     fn close_client(&mut self, efd: i32, fd: i32) {
         println!("{} Closed Connection", self.get_name(fd));
+        if self.up_stream.is_some() {
+            if self.up_stream.as_ref().unwrap().as_raw_fd() == fd {
+                match self.failover {
+                    Some(peer) => {
+                        self.reconnect(&peer);
+                        return;
+                    },
+                    None => {},
+                };
+            }
+        }
+        
         match self.get_stream(fd).unwrap().shutdown(std::net::Shutdown::Both){
             Ok(_) => {},
             Err(error) =>{
@@ -371,22 +465,51 @@ impl ChatNode {
 
     fn send_msg(&mut self, fd: i32, msg: &[u8]) {
         let mut buf = to_raw(&mut ChatHeader::from_msg(), Some(msg));
-        self.broadcast(&mut buf, fd);
+        self.broadcast(&mut buf, fd, false);
     }
 
     fn send_peer(&mut self) {
         let send_port: u16 = self.host_port;
         let buf: Vec<u8> = to_raw(&mut ChatHeader::from_port(send_port), None);
-        match self.up_stream.as_ref().unwrap().write(&buf){
-            Ok(bytes_count) => {
-                // println!("Sent initial Port {}, bytes = {}, buf = {:?}", send_port, bytes_count, &buf);
+        self.up_stream.as_ref().unwrap().write(&buf).expect("Write Failure send_peer()");
+    }
+
+    fn assign_successor(&mut self) -> std::option::Option<(Vec<u8>, i32)> {
+        let fd: i32;
+        if self.up_stream.as_ref().is_some() {
+            fd = self.up_stream.as_ref().unwrap().as_raw_fd();
+            self.successor = Some(fd);
+            return Some((to_raw(&mut ChatHeader::from(ChatType::FAILOVER, self.up_stream_info.unwrap()), None), fd));
+        }
+        match &self.successor {
+            Some(fd_stream) => {
+                fd = *fd_stream;
+                println!("some successor = {}, portno = {}", fd, self.get_peer_port(fd));
+                return Some((to_raw(&mut ChatHeader::from_failover(self.get_stream(fd).unwrap().peer_addr().unwrap(), self.get_peer_port(fd)), None), fd));
             },
-            Err(error) => {
-                println!("Write Failure: {:?}:", error);
-                std::process::exit(-1);
+            None  => {
+                for stream in &mut self.down_streams {
+                    if stream.2 {
+                        fd = stream.0.as_raw_fd();
+                        self.successor = Some(fd);
+                        let fail_ip: std::net::IpAddr = stream.0.peer_addr().unwrap().ip();
+                        let fail_port: u16 = self.get_peer_port(fd);
+                        println!("none, successor = {}", fd);
+                        return Some((to_raw(&mut ChatHeader::from_failover(std::net::SocketAddr::new(fail_ip, fail_port), fail_port), None), fd));
+                    }
+                }
             },
         };
+        return None;
+    }
 
+    fn send_failover(&mut self) {    
+        match self.assign_successor() {
+            None => {},
+            Some((mut buf, fd)) => {
+                self.broadcast(&mut buf, fd, true);
+            },
+        }
     }
 
     fn start_routine(&mut self) {
@@ -400,6 +523,7 @@ impl ChatNode {
                 std::process::exit(-1);
             },
         };
+        self.epoll_fd = fd_poller;
 
         //add tcp listener to read set
         match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, host_fd, 
@@ -528,11 +652,6 @@ impl ChatNode {
                     let mut msg: String = String::new();
                     match std::io::stdin().lock().read_line(&mut msg){
                         Ok(_count) => {
-                            // let mut msg_v: &mut Vec<u8>;
-                            // unsafe{
-                            //     msg_v = msg.as_mut_vec();
-                            // }
-                            // let mut buf = to_raw(&mut ChatHeader::from_msg(), Some(msg_v));
                             self.handle_send(msg.trim(), ready_fd);                            
                         },
                         Err(_) => {},
