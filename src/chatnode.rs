@@ -383,7 +383,7 @@ impl ChatNode {
 
     fn pick_down_stream(&mut self, fd: i32) -> (std::net::SocketAddr, u16) {
         let len: usize = self.down_streams.len();
-        let mut index: usize = rand::thread_rng().gen_range(0, len);
+        let mut index: usize = 0;
 
         if self.down_streams.get(index).unwrap().0.as_raw_fd() == fd {
             index = (index + 1) % len;
