@@ -3,12 +3,11 @@ extern crate regex;
 use std::os::unix::io::AsRawFd;
 use std::io::{BufRead};
 use std::io::{Write, Read};
-use regex::Regex;
-
+use std::cmp::Ordering;
+use rand::Rng;
 const MAX_POLLS: usize = 5;
 const STD_IN: i32 = 0;
-const CMD_SYM: char = '/';
-
+const MAX_DOWNSTREAM: usize = 3;
 
 // NOTE: consider EPOLLIN | EPOLLPRI | EPOLLERR
 
@@ -239,10 +238,19 @@ impl ChatNode {
                         match hdr.chat_t {
                             ChatType::PORT => {
                                 // println!("got port msg");
-                                let portno: u16 = hdr.peer.as_ref().unwrap().port;
-                                println!("setting port for {} = {}", fd, portno);
-                                self.set_peer(fd, portno);
-                                self.send_failover();
+                                let limit: usize = MAX_DOWNSTREAM;
+                                match self.down_streams.len().cmp(&limit) {
+                                    Ordering::Equal | Ordering::Greater => {
+                                        self.send_rebalance(fd);
+                                    },
+                                     _ => {
+                                        let portno: u16 = hdr.peer.as_ref().unwrap().port;
+                                        println!("setting port for {} = {}", fd, portno);
+                                        self.set_peer(fd, portno);
+                                        self.send_failover();
+                                     },
+                                };
+                                
                             },
                             ChatType::REGULAR => {
                                 if payload != None {
@@ -255,11 +263,15 @@ impl ChatNode {
                                 println!("got failover msg");
                                 self.failover = Some(hdr.peer.unwrap());
                                 println!("failover addr: {}:{}", self.failover.unwrap().addr.unwrap().ip(), self.failover.unwrap().port);
-                            }
+                            },
+                            ChatType::REBALANCE => {
+                                println!("got rebalance msg");
+                                self.reconnect(&hdr.peer.unwrap());
+                            },
                             _ => unimplemented!("implement all cmd"),
                         };
                     },
-                    _ => {println!("invalid chat 2"); },
+                    _ => { println!("invalid chat 2"); },
                 };
             },
         };
@@ -386,7 +398,16 @@ impl ChatNode {
                             std::process::exit(-1);
                         },
                     };
-
+                    
+                    match self.successor {
+                        Some(successor_fd) => {
+                            if successor_fd == fd {
+                                self.successor = None;
+                            }
+                        },
+                        None => {},
+                    };
+                    
                     self.up_stream = None;
                     self.up_stream_info = None;
                     self.up_stream_port = 0;
@@ -429,16 +450,16 @@ impl ChatNode {
         println!("{} Closed Connection", self.get_name(fd));
         if self.up_stream.is_some() {
             if self.up_stream.as_ref().unwrap().as_raw_fd() == fd {
+
                 match self.failover {
                     Some(peer) => {
                         self.reconnect(&peer);
                         return;
                     },
                     None => {},
-                };
+                };   
             }
         }
-        
         match self.get_stream(fd).unwrap().shutdown(std::net::Shutdown::Both){
             Ok(_) => {},
             Err(error) =>{
@@ -458,6 +479,16 @@ impl ChatNode {
         match self.get_stream_idx(fd) {
             Some(index) => {
                 self.down_streams.remove(index);
+            },
+            None => {},
+        };
+
+        match self.successor {
+            Some(successor_fd) => {
+                if successor_fd == fd {
+                    self.successor = None;
+                    self.send_failover();
+                }
             },
             None => {},
         };
@@ -510,6 +541,30 @@ impl ChatNode {
                 self.broadcast(&mut buf, fd, true);
             },
         }
+    }
+
+    fn pick_down_stream(&mut self, fd: i32) -> (std::net::SocketAddr, u16) {
+        let len: usize = self.down_streams.len();
+        let mut index: usize = rand::thread_rng().gen_range(0, len);
+
+        if self.down_streams.get(index).unwrap().0.as_raw_fd() == fd {
+            index = (index + 1) % len;
+        } 
+
+        let addr: std::net::SocketAddr = self.down_streams.get(index).unwrap().1;
+        let portno: u16 = self.down_streams.get(index).unwrap().3;
+
+        (addr, portno)
+    }
+
+    fn send_rebalance(&mut self, fd: i32) {
+        let (addr, portno) = self.pick_down_stream(fd);
+        match self.get_stream(fd).unwrap().write(to_raw(&mut ChatHeader::from_rebalance(addr, portno), None).as_ref()){
+            Ok(_) => {},
+            Err(error) => {
+                println!("In broadcast(), Write Failure: {:?}:", error);
+            },
+        };    
     }
 
     fn start_routine(&mut self) {
