@@ -12,7 +12,7 @@ fn main() {
 
     
     let port: u16 = argv[1].trim().parse().unwrap();
-    let mut node: chat::ChatNode = chat::ChatNode::new(std::net::SocketAddr::from(([127, 0, 0, 1], port)), port);
+    let mut node: chat::ChatNode = chat::ChatNode::new(std::net::SocketAddr::from(([0, 0, 0, 0], port)), port);
     if argv.len() >= 4 {
         let upstream: String = String::from(&argv[2]) + ":" + &argv[3];
         match std::net::TcpStream::connect(&upstream) {
