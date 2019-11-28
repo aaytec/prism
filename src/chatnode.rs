@@ -559,8 +559,8 @@ impl ChatNode {
 
 pub fn help() {
     println!("\t{}\t\t\t\t\t\t\t\t\t", style("COMMANDS").cyan());
-    println!("\t{}\t\t\t\t\t\t\t\t\t\t", style("1./help").green());
-    println!("\t{}\t\t\t\t\t\t\t\t\t", style("2./name <NAME>").green());
-    println!("\t{}\t\t\t\t\t",style("3./connect <CONNECT-IP> <CONNECT-PORTNO>").green());
-    println!("\t{}\t\t\t\t\t\t\t\t\t\t", style("4./exit").green());
+    println!("\t{}\t\t\t\t\t\t\t\t\t\t", style("1. /help").green());
+    println!("\t{}\t\t\t\t\t\t\t\t\t", style("2. /name <NAME>").green());
+    println!("\t{}\t\t\t\t\t",style("3. /connect <CONNECT-IP> <CONNECT-PORTNO>").green());
+    println!("\t{}\t\t\t\t\t\t\t\t\t\t", style("4. /exit").green());
 }

@@ -19,8 +19,8 @@ pub fn welcome(port: &str) {
 
 
 pub fn usage() {
-    println!("Usage: ./chat <HOST-PORT>");
-    println!("Usage: ./chat <HOST-PORT> <CONNECT-IP> <CONNECT-PORTNO>");
+    println!("Usage: ./prism <HOST-PORT>");
+    println!("Usage: ./prism <HOST-PORT> <CONNECT-IP> <CONNECT-PORTNO>");
 }
 
 fn main() {
