@@ -1,9 +1,11 @@
 extern crate regex;
+extern crate console;
 
 use std::os::unix::io::AsRawFd;
 use std::io::{BufRead};
 use std::io::{Write, Read};
 use std::cmp::Ordering;
+use console::style;
 
 const MAX_POLLS: usize = 5;
 const STD_IN: i32 = 0;
@@ -195,6 +197,12 @@ impl ChatNode {
                     },
                     "exit" => {
                         std::process::exit(0);
+                    },
+                    "connect" => {
+
+                    },
+                    "help" => {
+                        help();
                     },
                     _ => {/*  Ignore cmd */ },
                 }
@@ -547,4 +555,12 @@ impl ChatNode {
             }
         }
     }
+}
+
+pub fn help() {
+    println!("\t{}\t\t\t\t\t\t\t\t\t", style("COMMANDS").cyan());
+    println!("\t{}\t\t\t\t\t\t\t\t\t\t", style("1./help").green());
+    println!("\t{}\t\t\t\t\t\t\t\t\t", style("2./name <NAME>").green());
+    println!("\t{}\t\t\t\t\t",style("3./connect <CONNECT-IP> <CONNECT-PORTNO>").green());
+    println!("\t{}\t\t\t\t\t\t\t\t\t\t", style("4./exit").green());
 }
