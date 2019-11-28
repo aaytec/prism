@@ -121,9 +121,9 @@ impl ChatNode {
         }
     }
     
-    fn handle_recv(&mut self, buf: &mut Vec<u8>, epd: i32, fd: i32) {
+    fn handle_recv(&mut self, buf: &mut Vec<u8>, fd: i32) {
         match buf.len() {
-            0 => { self.close_client(epd, fd); },
+            0 => { self.close_client(fd); },
             _ => {
                 match chatlib::parse_raw(buf) {
                     (None, None) => { println!("error parsing"); },
@@ -173,7 +173,7 @@ impl ChatNode {
     }
 
     fn handle_send(&mut self, msg: &str, fd: i32) {
-        let re = regex::Regex::new(r"^/(?P<cmd>[^\s\t\r\n]+)(?x)(?P<arg>[^\r\n]+)").unwrap();
+        let re = regex::Regex::new(r"^/(?P<cmd>[^\s\t\r\n]+)(?x)(?P<arg>[^\r\n]*)").unwrap();
         let cap = re.captures(msg);
         match cap {
             None => {
@@ -189,32 +189,21 @@ impl ChatNode {
                 match c.name("cmd").unwrap().as_str() {
                     "name" => {
                         let name: &str = c.name("arg").unwrap().as_str().trim();
-                        self.set_name(name.as_ref());
-                    }
+                        match name.len() {
+                            0 => println!("Enter Valid Name!"),
+                            _ => self.set_name(name.as_ref()), 
+                        };
+                    },
                     "exit" => {
                         std::process::exit(0);
-                    }
+                    },
                     _ => {/*  Ignore cmd */ },
                 }
             },
         };
     }
     
-    fn is_stream(&self, fd: i32) -> bool {
-        for client in &self.down_streams {
-            if client.0.as_raw_fd() == fd {
-                return true;
-            }
-        }
-
-        if self.up_stream.is_some() && fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
-                return true;
-        }
-
-        false
-    }
-
-    fn _is_up_stream(&self, fd: i32) -> bool {
+    fn is_up_stream(&self, fd: i32) -> bool {
         if self.up_stream.is_some() && fd == self.up_stream.as_ref().unwrap().as_raw_fd(){
                 return true;
         }
@@ -222,15 +211,26 @@ impl ChatNode {
         false
     }
 
-    fn get_stream(&mut self, fd: i32) -> std::option::Option<&mut std::net::TcpStream> {
-        for stream in &mut self.down_streams {
-             if stream.0.as_raw_fd() == fd {
-                return Some(&mut stream.0);
+    fn is_stream(&self, fd: i32) -> bool {
+        for client in &self.down_streams {
+            if client.0.as_raw_fd() == fd {
+                return true;
             }
         }
 
-         if self.up_stream.is_some() && fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
-                return self.up_stream.as_mut();
+        self.is_up_stream(fd)
+    }
+
+
+    fn get_stream(&mut self, fd: i32) -> std::option::Option<&std::net::TcpStream> {
+        for stream in &self.down_streams {
+             if stream.0.as_raw_fd() == fd {
+                return Some(&stream.0);
+            }
+        }
+
+         if self.is_up_stream(fd) {
+                return self.up_stream.as_ref();
         }
 
         None
@@ -262,7 +262,7 @@ impl ChatNode {
             }
         }
 
-        if self.up_stream.is_some() && fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
+        if self.is_up_stream(fd) {
             return String::from("Upstream");
         }
 
@@ -276,24 +276,7 @@ impl ChatNode {
                 Ok(_) => {
 
                     let fd: i32 = self.up_stream.as_ref().unwrap().as_raw_fd();
-                    match epoll::ctl(   self.epoll_fd, epoll::ControlOptions::EPOLL_CTL_DEL, fd, 
-                            epoll::Event::new(epoll::Events::EPOLLERR, fd as u64)){
-                        Ok(_) => {},
-                        Err(error) => {
-                            println!("Epoll Ctl Failure: {:?}", error);
-                            std::process::exit(-1);
-                        },
-                    };
-                    
-                    if let Some(successor_fd) = self.successor {
-                        if successor_fd == fd {
-                            self.successor = None;
-                        }
-                    };
-                    
-                    self.up_stream = None;
-                    self.up_stream_info = None;
-                    self.up_stream_port = 0;
+                    self.remove_poll(fd);
                 },
                 Err(error) =>{
                     println!("Socket Shutdown Failure: {:?}", error);
@@ -310,14 +293,7 @@ impl ChatNode {
                 self.up_stream_port = peer.port;
                 self.up_stream_info = Some(*peer);
 
-                match epoll::ctl(   self.epoll_fd, epoll::ControlOptions::EPOLL_CTL_ADD, self.up_stream.as_ref().unwrap().as_raw_fd(), 
-                                    epoll::Event::new(epoll::Events::EPOLLIN, self.up_stream.as_ref().unwrap().as_raw_fd() as u64)){
-                    Ok(_) => {},
-                    Err(error) => {
-                        println!("Epoll Ctl Failure: {:?}", error);
-                        std::process::exit(-1);
-                    },
-                };
+                self.add_poll(self.up_stream.as_ref().unwrap().as_raw_fd());
 
                 self.up_stream.as_ref().unwrap().set_nonblocking(true).expect("Error in SetNonBlocking(true)");
                 self.up_stream.as_ref().unwrap().set_nodelay(true).expect("set_nodelay failure");
@@ -330,17 +306,13 @@ impl ChatNode {
         };
     }
 
-    fn close_client(&mut self, efd: i32, fd: i32) {
+    fn close_client(&mut self, fd: i32) {
         println!("{} Closed Connection", self.get_name(fd));
-        let mut up_stream_fd: i32 = -1;
-        if self.up_stream.is_some() {
-            up_stream_fd = self.up_stream.as_ref().unwrap().as_raw_fd();
-            if up_stream_fd == fd {
-                if let Some(peer) = self.failover {
-                    self.reconnect(&peer);
-                    return;
-                }  
-            }
+        if self.up_stream.is_some() && self.is_up_stream(fd) {
+            if let Some(peer) = self.failover {
+                self.reconnect(&peer);
+                return;
+            }  
         }
         
         match self.get_stream(fd).unwrap().shutdown(std::net::Shutdown::Both){
@@ -350,30 +322,8 @@ impl ChatNode {
                 std::process::exit(-1);
             },
         };
-        match epoll::ctl(   efd, epoll::ControlOptions::EPOLL_CTL_DEL, fd, 
-                            epoll::Event::new(epoll::Events::EPOLLERR, fd as u64)){
-            Ok(_) => {},
-            Err(error) => {
-                println!("Epoll Ctl Failure: {:?}", error);
-                std::process::exit(-1);
-            },
-        };
-        
-        if let Some(index) = self.get_stream_idx(fd) {
-            self.down_streams.remove(index);
-        };
 
-        if let Some(successor_fd) = self.successor {
-            if successor_fd == fd {
-                self.successor = None;
-            }
-        };
-
-        if up_stream_fd == fd {
-            self.up_stream = None;
-            self.up_stream_info = None;
-            self.up_stream_port = 0;
-        }
+        self.remove_poll(fd);
     }
 
     fn send_msg(&mut self, fd: i32, msg: &[u8]) {
@@ -455,6 +405,44 @@ impl ChatNode {
         };    
     }
 
+    fn add_poll(&self, fd: i32) {
+        match epoll::ctl(   self.epoll_fd, epoll::ControlOptions::EPOLL_CTL_ADD, fd, 
+                            epoll::Event::new(epoll::Events::EPOLLIN, fd as u64)){
+            Ok(_) => {},
+            Err(error) => {
+                println!("Epoll Ctl Failure: {:?}", error);
+                std::process::exit(-1);
+            },
+        }
+    }
+
+    fn remove_poll(&mut self, fd: i32) {
+        match epoll::ctl(   self.epoll_fd, epoll::ControlOptions::EPOLL_CTL_DEL, fd, 
+                            epoll::Event::new(epoll::Events::EPOLLERR, fd as u64)){
+            Ok(_) => {},
+            Err(error) => {
+                println!("Epoll Ctl Failure: {:?}", error);
+                std::process::exit(-1);
+            },
+        };
+
+        if let Some(index) = self.get_stream_idx(fd) {
+            self.down_streams.remove(index);
+        };
+
+        if let Some(successor_fd) = self.successor {
+            if successor_fd == fd {
+                self.successor = None;
+            }
+        };
+
+        if self.is_up_stream(fd) {
+            self.up_stream = None;
+            self.up_stream_info = None;
+            self.up_stream_port = 0;
+        }
+    }
+
     pub fn start_routine(&mut self) {
         let host_fd: i32 = self.host_listener.as_raw_fd();
         
@@ -469,43 +457,16 @@ impl ChatNode {
         self.epoll_fd = fd_poller;
 
         //add tcp listener to read set
-        match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, host_fd, 
-                            epoll::Event::new(epoll::Events::EPOLLIN, host_fd as u64)){
-            Ok(_) => {},
-            Err(error) => {
-                println!("Epoll Ctl Failure: {:?}", error);
-                std::process::exit(-1);
-            },
-        }
-        
-        //STD_IN
-        match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, STD_IN, 
-                            epoll::Event::new(epoll::Events::EPOLLIN, STD_IN as u64)){
-            Ok(_) => {},
-            Err(error) => {
-                println!("Epoll Ctl Failure: {:?}", error);
-                std::process::exit(-1);
-            },
-        };
+        self.add_poll(host_fd);
+        self.add_poll(STD_IN);
 
         //add upstream to read set
-        match &self.up_stream {
-            Some(stream) => {
-                match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, stream.as_raw_fd(), 
-                                    epoll::Event::new(epoll::Events::EPOLLIN, stream.as_raw_fd() as u64)){
-                    Ok(_) => {},
-                    Err(error) => {
-                        println!("Epoll Ctl Failure: {:?}", error);
-                        std::process::exit(-1);
-                    },
-                };
-
+        if let Some(stream) = &self.up_stream {
+                self.add_poll(stream.as_raw_fd());
                 self.up_stream_info = Some(chatlib::Peer::new(Some(self.up_stream.as_ref().unwrap().peer_addr().unwrap()), self.up_stream_port));
                 self.up_stream.as_ref().unwrap().set_nonblocking(true).expect("Error in SetNonBlocking(true)");
                 self.up_stream.as_ref().unwrap().set_nodelay(true).expect("set_nodelay failure");
                 self.send_peer();
-            },
-            None => {},
         };
 
         loop{
@@ -528,71 +489,62 @@ impl ChatNode {
                     },
                 };
 
-                if ready_fd == host_fd {
-                    //got incoming connection
+                match ready_fd {
+                    _ if ready_fd == host_fd => {
+                         match self.host_listener.accept() {
+                            Ok((down_stream, down_stream_addr)) => {
 
-                    match self.host_listener.accept() {
-                        Ok((down_stream, down_stream_addr)) => {
+                                let client_fd = down_stream.as_raw_fd();
+                                down_stream.set_nonblocking(true).expect("Error in SetNonBlocking(true)");
+                                down_stream.set_nodelay(true).expect("set_nodelay failure");
 
-                            let client_fd = down_stream.as_raw_fd();
-                            down_stream.set_nonblocking(true).expect("Error in SetNonBlocking(true)");
-                            down_stream.set_nodelay(true).expect("set_nodelay failure");
-
-                            println!("Got Connection From {}", down_stream_addr);
-                            self.down_streams.push(chatlib::InfoStream(down_stream, down_stream_addr, false, 0, format!("Client {}", client_fd)));
-
-                            match epoll::ctl(   fd_poller, epoll::ControlOptions::EPOLL_CTL_ADD, client_fd, 
-                                                epoll::Event::new(epoll::Events::EPOLLIN, client_fd as u64)){
-                                Ok(_) => {},
-                                Err(error) => {
-                                    println!("Epoll Ctl Failure: {:?}", error);
-                                    std::process::exit(-1);
-                                },
-                            };
-                        },
-                        Err(error) => {
-                            println!("Couldn't Accept New Connection: {:?}", error);
-                            continue;
-                        },
-                    }
-                }
-                else if self.is_stream(ready_fd) {
-                    //got msg from connections
-                    let mut vecbuf: Vec<u8> = Vec::new();
-                    loop {
-                        let mut peakbuf = [0u8; 1400]; // <--------------------- buffered fixed, fix later by looping TcpStream.peek() and stop at 0
-                        let mut _peak_count: usize = 0;
-                        match self.get_stream(ready_fd).unwrap().peek(&mut peakbuf) {
-                            Ok(count) => { _peak_count = count; },
-                            Err(_) => { break; },
-                        };
-
-                        if _peak_count == 0 {
-                            break;
-                        }
-                        
-                        let mut buf = vec![0u8; _peak_count];
-                        match self.get_stream(ready_fd).unwrap().read_exact(&mut buf) {
-                            Ok(()) => {
-                                vecbuf.extend_from_slice(&buf);
+                                println!("Got Connection From {}", down_stream_addr);
+                                self.down_streams.push(chatlib::InfoStream(down_stream, down_stream_addr, false, 0, format!("Client {}", client_fd)));
+                                self.add_poll(client_fd);
                             },
-                            Err(_) => {
-                                println!("BufRead Err");
-                                self.close_client(fd_poller, ready_fd);
+                            Err(error) => {
+                                println!("Couldn't Accept New Connection: {:?}", error);
+                                continue;
+                            },
+                        };
+                    },
+                    _ if ready_fd == STD_IN => {
+                        let mut msg: String = String::new();
+                        if let Ok(_count) = std::io::stdin().lock().read_line(&mut msg) {
+                                self.handle_send(msg.trim(), ready_fd);
+                        };
+                    },
+                    _ if self.is_stream(ready_fd) => {
+                        let mut vecbuf: Vec<u8> = Vec::new();
+                        loop {
+                            let mut peakbuf = [0u8; 1400];
+                            let mut _peak_count: usize = 0;
+                            match self.get_stream(ready_fd).unwrap().peek(&mut peakbuf) {
+                                Ok(count) => { _peak_count = count; },
+                                Err(_) => { break; },
+                            };
+
+                            if _peak_count == 0 {
                                 break;
                             }
-                        };
-                    }
+                            
+                            let mut buf = vec![0u8; _peak_count];
+                            match self.get_stream(ready_fd).unwrap().read_exact(&mut buf) {
+                                Ok(()) => {
+                                    vecbuf.extend_from_slice(&buf);
+                                },
+                                Err(_) => {
+                                    println!("BufRead Err");
+                                    self.close_client(ready_fd);
+                                    break;
+                                }
+                            };
+                        }
 
-                    self.handle_recv(&mut vecbuf, fd_poller, ready_fd);
-                }
-                else if ready_fd == 0 {
-                    //got msg from stdin
-                    let mut msg: String = String::new();
-                    if let Ok(_count) = std::io::stdin().lock().read_line(&mut msg) {
-                             self.handle_send(msg.trim(), ready_fd);
-                    };
-                }
+                        self.handle_recv(&mut vecbuf, ready_fd);
+                    },
+                    _ => { unreachable!("Epoll FD Picked Up FD That Is Not In Our Interest List"); },
+                };
             }
         }
     }
