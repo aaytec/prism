@@ -4,7 +4,6 @@ use std::os::unix::io::AsRawFd;
 use std::io::{BufRead};
 use std::io::{Write, Read};
 use std::cmp::Ordering;
-use rand::Rng;
 
 const MAX_POLLS: usize = 5;
 const STD_IN: i32 = 0;
