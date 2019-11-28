@@ -89,11 +89,8 @@ fn to_raw(head: &mut ChatHeader, buffer: std::option::Option<&[u8]>) -> Vec<u8> 
         buf.extend_from_slice(head_slice);
     }
 
-    match buffer {
-        Some(bytes) => {
-            buf.extend_from_slice(bytes);
-        },
-        _ => {},
+    if let Some(bytes) = buffer {
+        buf.extend_from_slice(bytes);
     };
     
     buf
@@ -102,7 +99,7 @@ fn to_raw(head: &mut ChatHeader, buffer: std::option::Option<&[u8]>) -> Vec<u8> 
 fn parse_raw(buffer: &mut [u8]) -> (std::option::Option<&ChatHeader>, std::option::Option<&[u8]>) {
     let hdr_size: usize = std::mem::size_of::<ChatHeader>();
     if buffer.len() < hdr_size {
-        return (None, None);
+        (None, None)
     }
     else{
         let hdr: &mut ChatHeader;
@@ -110,10 +107,10 @@ fn parse_raw(buffer: &mut [u8]) -> (std::option::Option<&ChatHeader>, std::optio
             hdr = &mut *(buffer as *mut _ as *mut ChatHeader);
         }
         if buffer.len() > hdr_size {
-            return (Some(hdr), Some(&buffer[hdr_size..]));
+            (Some(hdr), Some(&buffer[hdr_size..]))
         }
         else {
-            return (Some(hdr), None);
+            (Some(hdr), None)
         }
     }
 }
@@ -183,7 +180,7 @@ impl ChatNode {
             }
         }
         println!("couldn't find port");
-        return 0;
+        0
     }
 
     fn set_name(&mut self, name: &str) {
@@ -197,10 +194,10 @@ impl ChatNode {
         }
     }
 
-    fn set_stream_name(&mut self, fd: i32, name: &String) {
+    fn set_stream_name(&mut self, fd: i32, name: &str) {
         for stream in self.down_streams.iter_mut() {
             if stream.0.as_raw_fd() == fd {
-                stream.4 = name.clone();
+                stream.4 = name.to_string();
             }
         }
     }
@@ -218,15 +215,13 @@ impl ChatNode {
             }
         }
 
-        if self.up_stream.is_some() {
-            if fd != self.up_stream.as_ref().unwrap().as_raw_fd() {
+        if self.up_stream.is_some() && fd != self.up_stream.as_ref().unwrap().as_raw_fd(){
                 match self.up_stream.as_ref().unwrap().write(buf) {
                     Ok(_) => {},
                     Err(error) => {
                         println!("In broadcast(), Write Failure: {:?}:", error);
                     },
                 };
-            }
         }
     }
     
@@ -253,8 +248,8 @@ impl ChatNode {
                                 
                             },
                             ChatType::REGULAR => {
-                                if payload.is_some() {
-                                    println!("{}", String::from_utf8(payload.unwrap().to_vec()).unwrap());
+                                if let Some(load) = payload {
+                                    println!("{}", String::from_utf8(load.to_vec()).unwrap());
                                     self.broadcast(buf, fd, false);
                                 }
                             },
@@ -265,14 +260,14 @@ impl ChatNode {
                                 self.reconnect(&hdr.peer.unwrap());
                             },
                             ChatType::NAME => {
-                                if payload.is_some() {
-                                    let name: String = String::from_utf8(payload.unwrap().to_vec()).unwrap();
+                                if let Some(load) = payload {
+                                    let name: String = String::from_utf8(load.to_vec()).unwrap();
                                     self.set_stream_name(fd, &name);
-                                    let msg = String::from(format!("{} has Joined the Chat Room", name));
+                                    let msg = format!("{} has Joined the Chat Room", name);
                                     println!("{}", msg);
                                     self.send_msg(fd, msg.as_ref());
                                 }
-                            }
+                            },
                         };
                     },
                     _ => { println!("invalid chat format"); },
@@ -288,7 +283,7 @@ impl ChatNode {
             None => {
                 match self.name {
                     Some(_) => {
-                        let entire_msg: String = String::from(self.name.as_ref().unwrap()) + "> " + msg.as_ref();
+                        let entire_msg: String = String::from(self.name.as_ref().unwrap()) + "> " + msg;
                         self.send_msg(fd, entire_msg.as_ref());
                     },
                     None => println!("Please Set Your Name First!\n/name <Name>"),
@@ -316,23 +311,19 @@ impl ChatNode {
             }
         }
 
-        if self.up_stream.is_some() {
-            if fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
+        if self.up_stream.is_some() && fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
                 return true;
-            }
         }
 
-        return false;
+        false
     }
 
     fn _is_up_stream(&self, fd: i32) -> bool {
-        if self.up_stream.is_some() {
-            if fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
+        if self.up_stream.is_some() && fd == self.up_stream.as_ref().unwrap().as_raw_fd(){
                 return true;
-            }
         }
 
-        return false;
+        false
     }
 
     fn get_stream(&mut self, fd: i32) -> std::option::Option<&mut std::net::TcpStream> {
@@ -342,13 +333,11 @@ impl ChatNode {
             }
         }
 
-         if self.up_stream.is_some() {
-            if fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
+         if self.up_stream.is_some() && fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
                 return self.up_stream.as_mut();
-            }
         }
 
-        return None;
+        None
     }
 
     fn get_stream_idx(&mut self, fd: i32) -> std::option::Option<usize> {
@@ -377,10 +366,8 @@ impl ChatNode {
             }
         }
 
-         if self.up_stream.is_some() {
-            if fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
-                return String::from("Upstream");
-            }
+        if self.up_stream.is_some() && fd == self.up_stream.as_ref().unwrap().as_raw_fd() {
+            return String::from("Upstream");
         }
 
         String::from("UnKnown")
@@ -402,13 +389,10 @@ impl ChatNode {
                         },
                     };
                     
-                    match self.successor {
-                        Some(successor_fd) => {
-                            if successor_fd == fd {
-                                self.successor = None;
-                            }
-                        },
-                        None => {},
+                    if let Some(successor_fd) = self.successor {
+                        if successor_fd == fd {
+                            self.successor = None;
+                        }
                     };
                     
                     self.up_stream = None;
@@ -456,13 +440,10 @@ impl ChatNode {
         if self.up_stream.is_some() {
             up_stream_fd = self.up_stream.as_ref().unwrap().as_raw_fd();
             if up_stream_fd == fd {
-                match self.failover {
-                    Some(peer) => {
-                        self.reconnect(&peer);
-                        return;
-                    },
-                    None => {},
-                };   
+                if let Some(peer) = self.failover {
+                    self.reconnect(&peer);
+                    return;
+                }  
             }
         }
         
@@ -481,12 +462,15 @@ impl ChatNode {
                 std::process::exit(-1);
             },
         };
+        
+        if let Some(index) = self.get_stream_idx(fd) {
+            self.down_streams.remove(index);
+        };
 
-        match self.get_stream_idx(fd) {
-            Some(index) => {
-                self.down_streams.remove(index);
-            },
-            None => {},
+        if let Some(successor_fd) = self.successor {
+            if successor_fd == fd {
+                self.successor = None;
+            }
         };
 
         if up_stream_fd == fd {
@@ -494,15 +478,6 @@ impl ChatNode {
             self.up_stream_info = None;
             self.up_stream_port = 0;
         }
-
-        match self.successor {
-            Some(successor_fd) => {
-                if successor_fd == fd {
-                    self.successor = None;
-                }
-            },
-            None => {},
-        };
     }
 
     fn send_msg(&mut self, fd: i32, msg: &[u8]) {
@@ -520,7 +495,7 @@ impl ChatNode {
     fn send_peer(&mut self) {
         let send_port: u16 = self.host_port;
         let buf: Vec<u8> = to_raw(&mut ChatHeader::from_port(send_port), None);
-        self.up_stream.as_ref().unwrap().write(&buf).expect("Write Failure send_peer()");
+        self.up_stream.as_ref().unwrap().write_all(&buf).expect("Write Failure send_peer()");
     }
 
     fn assign_successor(&mut self) -> std::option::Option<(Vec<u8>, i32)> {
@@ -547,7 +522,8 @@ impl ChatNode {
                 }
             },
         };
-        return None;
+
+        None
     }
 
     fn send_failover(&mut self) {    
@@ -646,9 +622,9 @@ impl ChatNode {
                 }
             };
 
-            for i in 0..num_events {
-                let ready_fd: i32 = all_events[i].data as i32;
-                let _event = match epoll::Events::from_bits(all_events[i].events){
+            for event in all_events.iter().take(num_events) {
+                let ready_fd: i32 = event.data as i32;
+                let _event = match epoll::Events::from_bits(event.events){
                     Some(ev) => ev,
                     _ => {
                         println!("Error in from_bits()...");
@@ -702,8 +678,6 @@ impl ChatNode {
                         let mut buf = vec![0u8; _peak_count];
                         match self.get_stream(ready_fd).unwrap().read_exact(&mut buf) {
                             Ok(()) => {
-                                // println!("From {}, Got {} Bytes", self.get_name(ready_fd), peak_count);
-                                // println!("recved {:?}", buf);
                                 vecbuf.extend_from_slice(&buf);
                             },
                             Err(_) => {
@@ -719,11 +693,8 @@ impl ChatNode {
                 else if ready_fd == 0 {
                     //got msg from stdin
                     let mut msg: String = String::new();
-                    match std::io::stdin().lock().read_line(&mut msg){
-                        Ok(_count) => {
-                            self.handle_send(msg.trim(), ready_fd);                            
-                        },
-                        Err(_) => {},
+                    if let Ok(_count) = std::io::stdin().lock().read_line(&mut msg) {
+                             self.handle_send(msg.trim(), ready_fd);
                     };
                 }
             }
