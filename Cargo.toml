@@ -14,3 +14,7 @@ path= "./src/chat.rs"
 epoll="*"
 regex="*"
 rand="*"
+
+[lib]
+name="chat"
+path="./src/chatnode.rs"
