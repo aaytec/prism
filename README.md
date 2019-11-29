@@ -42,7 +42,7 @@ There are 2 Options for running Prism:
 Reminders
 - Set your alias first!
 - Share your connectivity information with discretion!
-- run $ifconfig for more information of your connection details.
+- run `ifconfig` for more information of your connection details.
 
 Commands
 - `/help`
