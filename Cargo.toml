@@ -8,7 +8,7 @@ edition = "2018"
 
 [[bin]]
 name= "prism"
-path= "./src/chat.rs"
+path= "./src/prism.rs"
 
 [dependencies]
 epoll="*"

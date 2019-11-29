@@ -8,112 +8,48 @@
 <div align="center">
 
 [![Status](https://img.shields.io/badge/status-active-success.svg)]()
-[![GitHub Issues](https://img.shields.io/github/issues/kylelobo/The-Documentation-Compendium.svg)](https://github.com/ashah252/p2p-chat/issues)
-[![GitHub Pull Requests](https://img.shields.io/github/issues-pr/kylelobo/The-Documentation-Compendium.svg)](https://github.com/ashah252/p2p-chat/pulls)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](/LICENSE)
 
 </div>
 
 ---
-<!-- 
-<p align="center"> Few lines describing your project.
-    <br> 
-</p> -->
 
-## 📝 Table of Contents
-
-- [About](#about)
-- [Usage](#usage)
-- [Authors](#authors)
-- [Acknowledgments](#acknowledgement)
-<!-- - [Getting Started](#getting_started) -->
-<!-- - [Deployment](#deployment) -->
-<!-- - [Built Using](#built_using) -->
-<!-- - [TODO](../TODO.md) -->
-<!-- - [Contributing](../CONTRIBUTING.md) -->
-
-## 🧐 About <a name = "about"></a>
+## About
 
 Prism is a multi-chat service provided via a shared network between your peers.
 
-It allows you to create, join, leave, and change chat channels with ease!
+It allows you to create, join, leave, and change chat channels with ease.
 
-<!-- ## 🏁 Getting Started <a name = "getting_started"></a>
+The underlying design follows the principles of a peer to peer network such as 
+distributed computations, broadcasting queries, extendability, and no amount of centralization within the service.
 
-These instructions will get you a copy of the project up and running on your local machine for development and testing purposes. See [deployment](#deployment) for notes on how to deploy the project on a live system.
+The goal of Prism is simple: create a platform where peers can communicate, 
+create small communities of similar interests, 
+and allow unmonitored activity.
 
-### Prerequisites
+This makes it very easy for users to start short conversations on topics,
+maintain multiple of these conversations at a time, 
+chat with community members, 
+and most importantly stay anonymous between peers.
 
-What things you need to install the software and how to install them.
 
-```
-Give examples
-```
-
-### Installing
-
-A step by step series of examples that tell you how to get a development env running.
-
-Say what the step will be
-
-```
-Give the example
-```
-
-And repeat
-
-```
-until finished
-```
-
-End with an example of getting some data out of the system or using it for a little demo.
-
-## 🔧 Running the tests <a name = "tests"></a>
-
-Explain how to run the automated tests for this system.
-
-### Break down into end to end tests
-
-Explain what these tests test and why
-
-```
-Give an example
-```
-
-### And coding style tests
-
-Explain what these tests test and why
-
-```
-Give an example
-``` -->
-
-## 🎈 Usage <a name="usage"></a>
+## Usage
 
 There are 2 Options for running Prism:
-1) $prism `<HOST-PORT>`
-2) $prism `<HOST-PORT>` `<CONNECT-IP>` `<CONNECT-PORTNO>`
+1) `prism <HOST-PORT>`
+2) `prism <HOST-PORT> <CONNECT-IP> <CONNECT-PORTNO>`
 
+Reminders
+- Set your alias first!
+- Share your connectivity information with discretion!
+- run $ifconfig for more information of your connection details.
 
-<!-- ## 🚀 Deployment <a name = "deployment"></a>
+Commands
+- `/help`
+- `/name <NAME>`
+- `/connect <CONNECT-IP> <CONNECT-PORTNO>`
+- `/exit`
 
-Add additional notes about how to deploy this on a live system. -->
-
-<!-- ## ⛏️ Built Using <a name = "built_using"></a>
-
-- [MongoDB](https://www.mongodb.com/) - Database
-- [Express](https://expressjs.com/) - Server Framework
-- [VueJs](https://vuejs.org/) - Web Framework
-- [NodeJs](https://nodejs.org/en/) - Server Environment -->
-
-## ✍️ Authors <a name = "authors"></a>
+## Authors
 
 - [@ashah252](https://github.com/ashah252) - Idea & Initial work
-
-<!-- See also the list of [contributors](https://github.com/ashah252/p2p-chat/contributors) who participated in this project. -->
-
-<!-- ## 🎉 Acknowledgements <a name = "acknowledgement"></a>
-
-- Hat tip to anyone whose code was used
-- Inspiration
-- References -->
