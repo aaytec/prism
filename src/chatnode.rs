@@ -199,7 +199,20 @@ impl ChatNode {
                         std::process::exit(0);
                     },
                     "connect" => {
+                        println!("{}", c.name("arg").unwrap().as_str().trim());
+                        let con_re = regex::Regex::new(r"(?P<ip>[^\s\t\r\n]+)(?:[\s\t\r\n]*)(?P<port>[^\r\n]+)").unwrap();
+                        match con_re.captures(c.name("arg").unwrap().as_str().trim()){
+                            None => {
+                                println!("Please enter in the correct format!");
+                            },
+                            Some(c2) => {
+                                let connect_addr = std::net::SocketAddr::new(c2.name("ip").unwrap().as_str().parse::<std::net::IpAddr>().unwrap(), 
+                                                                             c2.name("port").unwrap().as_str().parse::<u16>().unwrap());
 
+                                self.reconnect(&chatlib::Peer::new(Some(connect_addr), connect_addr.port()));
+                            },
+                        };
+                        
                     },
                     "help" => {
                         help();
